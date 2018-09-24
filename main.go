@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"image"
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aarzilli/nucular"
@@ -23,55 +26,28 @@ var (
 	debugEditor  = &nucular.TextEditor{Flags: nucular.EditMultiline | nucular.EditReadOnly}
 	logEditor    = &nucular.TextEditor{Flags: nucular.EditSelectable | nucular.EditMultiline | nucular.EditClipboard | nucular.EditReadOnly}
 
+	logBuffer bytes.Buffer
+
 	chippy *chip8.System
 	system *emulator.Machine
+
+	emulatorPaused int32 = 1
+	projectName    string
 )
 
-func main() {
-	masterWindow = nucular.NewMasterWindow(0, "Chip8 Studio", func(w *nucular.Window) {
-		w.MenubarBegin()
-		w.Row(25).Static(45, 45, 70, 70, 70)
-		if w := w.Menu(label.TA("MENU", "CC"), 120, nil); w != nil {
-			w.Row(25).Dynamic(1)
-			if w.MenuItem(label.TA("Hide", "LC")) {
-				//od.ShowMenu = false
-			}
-			if w.MenuItem(label.TA("About", "LC")) {
-				//od.showAppAbout(w.Master())
-			}
-			//w.Progress(&od.Prog, 100, true)
-			//w.SliderInt(0, &od.Slider, 16, 1)
-			//w.CheckboxText("check", &od.Check)
-		}
-		if w := w.Menu(label.TA("THEME", "CC"), 180, nil); w != nil {
-			w.Row(25).Dynamic(1)
-			//newtheme := od.Theme
-			if w.OptionText("Default Theme", true) {
-				//newtheme = nstyle.DefaultTheme
-			}
-			if w.OptionText("White Theme", true) {
-				//newtheme = nstyle.WhiteTheme
-			}
-			if w.OptionText("Red Theme", false) {
-				//newtheme = nstyle.RedTheme
-			}
-			if w.OptionText("Dark Theme", false) {
-				//newtheme = nstyle.DarkTheme
-			}
-			//if newtheme != od.Theme {
-			//od.Theme = newtheme
-			//	w.Master().SetStyle(nstyle.FromTheme(od.Theme, w.Master().Style().Scaling))
-			//	w.Close()
-			//}
-		}
-		//w.Progress(&od.Mprog, 100, true)
-		//w.SliderInt(0, &od.Mslider, 16, 1)
-		//w.CheckboxText("check", &od.Mcheck)
-		w.MenubarEnd()
-	})
+func init() {
+	assembler.Logger = log.New(&logBuffer, "ASM: ", 0)
+}
 
-	flags := nucular.WindowTitle | nucular.WindowBorder | nucular.WindowMovable | nucular.WindowScalable | nucular.WindowNonmodal | nucular.WindowNoScrollbar | nucular.WindowClosable
-	masterWindow.PopupOpen("Source", flags, rect.Rect{0, 0, 400, 600}, true, textWindowUpdate)
+func main() {
+	const projectFile = "../chip8/cmd/asm/tests/pong.asm"
+	projectBase := filepath.Base(projectFile)
+	projectName = strings.ToUpper(strings.TrimRight(projectBase, filepath.Ext(projectBase)))
+
+	masterWindow = nucular.NewMasterWindowSize(0, "Chip8 Studio - "+projectFile, image.Pt(1280, 720), func(*nucular.Window) {})
+
+	flags := nucular.WindowTitle | nucular.WindowBorder | nucular.WindowMovable | nucular.WindowScalable | nucular.WindowNonmodal | nucular.WindowNoScrollbar
+	masterWindow.PopupOpen(projectName, flags, rect.Rect{0, 0, 400, 600}, true, textWindowUpdate)
 	masterWindow.PopupOpen("Output", flags, rect.Rect{0, 0, 400, 200}, true, logWindowUpdate)
 	masterWindow.PopupOpen("Debug", flags, rect.Rect{0, 0, 400, 400}, true, debugWindowUpdate)
 	masterWindow.PopupOpen("Emulator", flags, rect.Rect{0, 0, 640, 360}, true, emulatorWindowUpdate)
@@ -79,50 +55,32 @@ func main() {
 	textEditor.Flags = nucular.EditBox
 	masterWindow.ActivateEditor(textEditor)
 
-	source, err := ioutil.ReadFile("../chip8/cmd/asm/tests/pong.asm")
+	source, err := ioutil.ReadFile(projectFile)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	textEditor.Paste(strings.Replace(string(source), "\r\n", "\n", -1))
 
-	fp, err := ioutil.TempFile("", "")
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	var buf bytes.Buffer
-	assembler.Logger = log.New(&buf, "ASM: ", 0)
-	assembler.Assemble("PONG", bytes.NewReader(source), fp)
-
-	name := fp.Name()
-	fp.Close()
-
-	logEditor.Buffer = []rune(string(buf.Bytes()))
-
-	prog, err := ioutil.ReadFile(name)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	os.Remove(name)
-
 	system = &emulator.Machine{
 		CpuSpeedHz: emulator.DefaultCPUSpeed,
-		Program:    prog,
+		Program:    assembleBinary(source),
 	}
 	chippy = chip8.NewSystem(system)
 
 	go func() {
 		for {
-			system.Lock()
-			if err := chippy.Step(); err != nil {
-				fmt.Println(err)
-			}
+			if atomic.LoadInt32(&emulatorPaused) == 0 {
+				system.Lock()
+				if err := chippy.Step(); err != nil {
+					fmt.Println(err)
+				}
 
-			if chippy.Invalid() {
-				masterWindow.Changed()
+				if chippy.Invalid() {
+					masterWindow.Changed()
+				}
+				system.Unlock()
 			}
-			system.Unlock()
 
 			time.Sleep(time.Second / system.CpuSpeedHz)
 		}
@@ -131,7 +89,66 @@ func main() {
 	masterWindow.Main()
 }
 
+func runAssembler() {
+	source := []byte(string(textEditor.Buffer))
+	if prog := assembleBinary(source); len(prog) > 0 {
+		atomic.StoreInt32(&emulatorPaused, 1)
+
+		system.Lock()
+		system.Program = prog
+		system.Unlock()
+		chippy.Reset()
+	}
+}
+
+func assembleBinary(source []byte) []byte {
+	fp, err := ioutil.TempFile("", "")
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	_, errs := assembler.Assemble(projectName, bytes.NewReader(source), fp)
+	if len(errs) > 0 {
+		return nil
+	}
+
+	fpName := fp.Name()
+	fp.Close()
+
+	logEditor.Buffer = []rune(string(logBuffer.Bytes()))
+
+	prog, err := ioutil.ReadFile(fpName)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	os.Remove(fpName)
+
+	return prog
+}
+
 func textWindowUpdate(w *nucular.Window) {
+	w.MenubarBegin()
+	w.Row(20).Static(50, 50)
+
+	if w := w.Menu(label.TA("Project", "CC"), 120, nil); w != nil {
+		w.Row(25).Dynamic(1)
+		if w.MenuItem(label.TA("New", "LC")) {
+		}
+		if w.MenuItem(label.TA("Open", "LC")) {
+		}
+		if w.MenuItem(label.TA("Save", "LC")) {
+		}
+	}
+	if w := w.Menu(label.TA("Build", "CC"), 120, nil); w != nil {
+		w.Row(25).Dynamic(1)
+		if w.MenuItem(label.TA("Assemble", "LC")) {
+			runAssembler()
+		}
+		if w.MenuItem(label.TA("Bundle", "LC")) {
+		}
+	}
+	w.MenubarEnd()
+
 	w.Row(w.Bounds.H - 50).Static(w.Bounds.W - 15)
 	textEditor.Edit(w)
 }
@@ -142,14 +159,40 @@ func logWindowUpdate(w *nucular.Window) {
 }
 
 func debugWindowUpdate(w *nucular.Window) {
+	w.Row(25).Static(60, 60, 60)
+
+	if atomic.LoadInt32(&emulatorPaused) != 0 {
+		if w.ButtonText("Run") {
+			atomic.StoreInt32(&emulatorPaused, 0)
+		}
+		if w.ButtonText("Step") {
+			atomic.StoreInt32(&emulatorPaused, 0)
+		}
+	} else {
+		if w.ButtonText("Pause") {
+			atomic.StoreInt32(&emulatorPaused, 1)
+		}
+	}
+
+	didReset := false
+	if w.ButtonText("Reset") {
+		system.Lock()
+		chippy.Reset()
+		system.Unlock()
+		atomic.StoreInt32(&emulatorPaused, 1)
+		didReset = true
+	}
+
 	w.Row(w.Bounds.H - 50).Static(w.Bounds.W - 15)
 
-	system.Lock()
-	var buf bytes.Buffer
-	chippy.Dump(&buf, "PONG")
-	system.Unlock()
+	if debugEditor.Buffer == nil || didReset || atomic.LoadInt32(&emulatorPaused) == 0 {
+		system.Lock()
+		var buf bytes.Buffer
+		chippy.Dump(&buf, projectName)
+		system.Unlock()
 
-	debugEditor.Buffer = []rune(buf.String())
+		debugEditor.Buffer = []rune(buf.String())
+	}
 	debugEditor.Edit(w)
 }
 
