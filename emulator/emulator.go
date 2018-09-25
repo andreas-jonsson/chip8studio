@@ -2,6 +2,7 @@ package emulator
 
 import (
 	"image"
+	"image/color/palette"
 	"math/rand"
 	"sync"
 	"time"
@@ -54,9 +55,10 @@ func (m *Machine) Draw(video []byte) {
 
 	pix := m.backBuffer.Pix
 	for i, p := range video {
-		pix[i*4] = p
-		pix[i*4+1] = 0x0
-		pix[i*4+2] = 0x0
+		r, g, b, _ := palette.Plan9[p].RGBA()
+		pix[i*4] = byte(r)
+		pix[i*4+1] = byte(g)
+		pix[i*4+2] = byte(b)
 		pix[i*4+3] = 0xFF
 	}
 
