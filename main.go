@@ -12,10 +12,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/aarzilli/nucular"
 	"github.com/aarzilli/nucular/label"
 	"github.com/aarzilli/nucular/rect"
+
+	"golang.org/x/mobile/event/key"
 
 	"github.com/sqweek/dialog"
 
@@ -291,6 +294,13 @@ func emulatorWindowUpdate(w *nucular.Window) {
 	}
 
 	system.Lock()
+	if keys := w.Input().Keyboard.Keys; len(keys) > 0 {
+		k := keys[0]
+		system.Event = (*key.Event)(unsafe.Pointer(&k)) // This cast is not very nice. :(
+	} else {
+		system.Event = nil
+	}
+
 	chippy.Invalidate()
 	chippy.Refresh()
 	system.Unlock()

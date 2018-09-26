@@ -9,6 +9,8 @@ import (
 
 	"github.com/nfnt/resize"
 
+	"golang.org/x/mobile/event/key"
+
 	"github.com/aarzilli/nucular"
 )
 
@@ -20,6 +22,7 @@ type Machine struct {
 	Program    []byte
 	Window     *nucular.Window
 	CpuSpeedHz time.Duration
+	Event      *key.Event
 
 	backBuffer *image.RGBA
 }
@@ -39,6 +42,43 @@ func (m *Machine) EndTone() {
 }
 
 func (m *Machine) Key(code int) bool {
+	if m.Event != nil {
+		switch key.Code(m.Event.Code) {
+		case key.Code0, key.CodeKeypad0:
+			return code == 0
+		case key.Code1, key.CodeKeypad1:
+			return code == 1
+		case key.Code2, key.CodeKeypad2:
+			return code == 2
+		case key.Code3, key.CodeKeypad3:
+			return code == 3
+		case key.Code4, key.CodeKeypad4:
+			return code == 4
+		case key.Code5, key.CodeKeypad5:
+			return code == 5
+		case key.Code6, key.CodeKeypad6:
+			return code == 6
+		case key.Code7, key.CodeKeypad7:
+			return code == 7
+		case key.Code8, key.CodeKeypad8:
+			return code == 8
+		case key.Code9, key.CodeKeypad9:
+			return code == 9
+		case key.CodeA:
+			return code == 0xA
+		case key.CodeB:
+			return code == 0xB
+		case key.CodeC:
+			return code == 0xC
+		case key.CodeD:
+			return code == 0xD
+		case key.CodeE:
+			return code == 0xE
+		case key.CodeF:
+			return code == 0xF
+		}
+	}
+
 	return false
 }
 func (m *Machine) SetCPUFrequency(freq int) {
